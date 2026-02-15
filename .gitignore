@@ -1,0 +1,8 @@
+# Python env
+venv/
+
+# .env file
+.env
+
+# Generated / local data (e.g. ChromaDB)
+data/
