@@ -3,7 +3,7 @@ from  langchain_community.document_loaders import PyMuPDFLoader
 from langchain_core.tools import tool
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain.agents import AgentState, create_agent
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_chroma import Chroma
 from google import genai
@@ -65,8 +65,7 @@ class RagController:
     def index_data(self, file_path):
         '''
             - Get the file content uploaded
-            - Chunk
-            - Convert to vector 
+            - Chunk 
             - Save as metadata
         '''
         file_content = self.load_and_process_pdf(file_path)
@@ -163,6 +162,6 @@ class RagController:
         # else:
         #     print(f"Test file '{test_file}' not found")
             
-# if __name__ == "__main__":
-#     rag = RagController()
-#     rag.test()
+if __name__ == "__main__":
+    rag = RagController()
+    rag.test()

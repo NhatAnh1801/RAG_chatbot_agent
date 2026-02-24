@@ -5,6 +5,9 @@ import tempfile
 
 from src.rag_engine import RagController
 
+MAX_FILE_SIZE_MB = 10
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024 
+
 st.set_page_config(
     page_title="RAG Chatbot",
     page_icon="🤖",
@@ -49,7 +52,6 @@ with st.sidebar:
                     "size": file.size
                 }
                 st.session_state.uploaded_files.append(file_data)
-                # TODO
                 try:
                     with st.spinner('Importing and processing file...'):
                         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_data["name"])[1]) as tmp_file:
@@ -114,7 +116,8 @@ if prompt:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 history = st.session_state.messages[1:]
-                response = st.session_state.rag_controller.ask(prompt, history)
+                response = ""
+                #response = st.session_state.rag_controller.ask(prompt, history)
             st.markdown(response)
 
     st.session_state.messages.append({"role": "assistant", "content": response})
