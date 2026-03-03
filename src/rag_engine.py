@@ -2,11 +2,12 @@
 from  langchain_community.document_loaders import PyMuPDFLoader
 from langchain_core.tools import tool
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_chroma import Chroma
 from google import genai
+from src.models.embeddings.gte_multi_base import GTE
+
 
 from dotenv import load_dotenv
 import os
@@ -21,11 +22,8 @@ class RagController:
         self.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
         if not self.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable is not set")
-        
-        self.embedding_model = GoogleGenerativeAIEmbeddings(
-            model="gemini-embedding-001", 
-            api_key=self.GEMINI_API_KEY
-        )
+            
+        self.embedding_model = GTE()
         
         self.vector_db = Chroma(
             embedding_function=self.embedding_model,
