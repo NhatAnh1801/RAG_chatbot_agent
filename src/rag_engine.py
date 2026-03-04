@@ -5,8 +5,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_chroma import Chroma
-from google import genai
-from src.models.embeddings.gte_multi_base import GTE
+from models.embeddings.gte_multi_base import GTE
 
 
 from dotenv import load_dotenv
