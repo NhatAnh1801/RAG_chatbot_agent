@@ -1,13 +1,17 @@
 
 from  langchain_community.document_loaders import PyMuPDFLoader
-from langchain_core.tools import tool
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_classic.retrievers import ParentDocumentRetriever
+
+from langchain_classic.storage import InMemoryStore
+from langchain_chroma import Chroma
+
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
-from langchain_chroma import Chroma
-from google import genai
-from src.models.embeddings.gte_multi_base import GTE
+from langchain_core.tools import tool
 
+from models.embeddings.gte_multi_base import GTE
 
 from dotenv import load_dotenv
 import os
@@ -29,6 +33,9 @@ class RagController:
             embedding_function=self.embedding_model,
             persist_directory='./data/chromadb'    
         )
+        self.small2big_retriever = None
+        
+        self.store = InMemoryStore()    # Store in RAM (will be replaced in the future)
         
         self.model = init_chat_model(
             "google_genai:gemini-flash-lite-latest",
@@ -47,37 +54,39 @@ class RagController:
         return loader.load()
 
 
-    def split_doc(self, docs: list, chunk_size: int = 1000,  overlap: int = 200):
+    def ingest_docs(self, docs: list, parent_chunk_size: int = 1000, child_chunk_size: int=200):
         '''
-            - Chunk into simpler text 
+            Using small-to-big to chunk texts
         '''
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size = chunk_size,
-            chunk_overlap = overlap,
+        parent_splitter = RecursiveCharacterTextSplitter(
+            chunk_size = parent_chunk_size,
             length_function = len,
+            chunk_overlap=200,
             separators=["\n\n", "\n", " ", ""]
         )
-        chunks = text_splitter.split_documents(docs)
-        return chunks
-    
+        
+        child_splitter = RecursiveCharacterTextSplitter(
+            chunk_size = child_chunk_size,
+            length_function = len,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", " ", ""]
+        )
+        
+        self.small2big_retriever = ParentDocumentRetriever(
+            vectorstore=self.vector_db,
+            docstore=self.store,
+            child_splitter=child_splitter,
+            parent_splitter=parent_splitter
+        )
+        
+        # Add data top retriever
+        self.small2big_retriever.add_documents(docs)
+          
     def index_data(self, file_path):
-        '''
-            - Get the file content uploaded
-            - Chunk 
-            - Save as metadata
-        '''
         file_content = self.load_and_process_pdf(file_path)
-        
-        chunks = self.split_doc(file_content)
-        if not chunks:
-            raise ValueError(f"No content extracted from {file_path}")
-    
-        _= self.vector_db.add_documents(chunks)
-        
-        return len(chunks)
+        self.ingest_docs(file_content)
     
     def ask(self, question, history=None, max_turns=5):
-        
         @tool(response_format="content_and_artifact")
         def retrieve_doc(query:str) -> tuple:
             """
@@ -87,7 +96,7 @@ class RagController:
             Returns:
                 A tuple of (serialized text, list of Document objects).
             """
-            retrieved_docs  = self.vector_db.similarity_search(query, k=3)
+            retrieved_docs  = self.small2big_retriever.invoke(query)
             serialized = "\n\n".join(
             (f"Source: {doc.metadata}\nContent: {doc.page_content}")
                 for doc in retrieved_docs
@@ -130,9 +139,7 @@ class RagController:
                 })
         
         messages.append({"role": "user", "content": question})
-        print(f'Messages: {messages}')
         inputs = {"messages": messages}
-        
         
         response = None
         for chunk in agent.stream(input=inputs, stream_mode="values"):
@@ -143,22 +150,30 @@ class RagController:
         return "No response"
         
     def test(self):
-        pass
         # Test the retrieve_doc function
-        # query = "What is this document about?"
-        # serialized, retrieved_docs = self.retrieve_doc(query)
-        # for i, r in enumerate(retrieved_docs):
-        #     print(f'chunk: {r} at idx: {i}')
-        #     print('*'*50)
-        # test_file = "./src/[CV]Vuong Nhat Anh.pdf"
-        # if os.path.exists(test_file):
-        #     try:
-        #         num_docs = self.index_data(test_file)
-        #         print(f"Successfully indexed {num_docs} documents from {test_file}")
-        #     except Exception as e:
-        #         print(f"Error indexing file: {e}")
-        # else:
-        #     print(f"Test file '{test_file}' not found")
+        test_file = r"D:\Pycharm projects\RAG_agent\src\interview.pdf"
+        query = "what is author name?"
+        if os.path.exists(test_file):
+            try:
+                import time
+
+                # Time the indexing step
+                start_index = time.perf_counter()
+                num_docs = self.index_data(test_file)
+                end_index = time.perf_counter()
+                print(f"Successfully indexed {num_docs} documents from {test_file} (Time taken: {end_index - start_index:.4f} seconds)")
+
+                # # Test asking a query and time it
+                # history = []
+                # start_ask = time.perf_counter()
+                # response = self.ask(query, history)
+                # end_ask = time.perf_counter()
+                # print(f'Query: {query}\nResponse: {response}')
+                # print(f"ask() function time taken: {end_ask - start_ask:.4f} seconds")
+            except Exception as e:
+                print(f"Error indexing file: {e}")
+        else:
+            print(f"Test file '{test_file}' not found")
             
 if __name__ == "__main__":
     rag = RagController()
