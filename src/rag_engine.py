@@ -1,8 +1,12 @@
-
-from  langchain_community.document_loaders import PyMuPDFLoader
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_classic.retrievers import ParentDocumentRetriever
+from langchain_docling.loader import DoclingLoader
+from docling.document_converter import DocumentConverter
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, AcceleratorDevice, EasyOcrOptions, AcceleratorOptions
+from docling.document_converter import PdfFormatOption
+from langchain_community.vectorstores.utils import filter_complex_metadata
+from langchain_community.document_loaders import PyMuPDFLoader
 
 from langchain_classic.storage import InMemoryStore
 from langchain_chroma import Chroma
@@ -12,12 +16,14 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 
 from models.embeddings.gte_multi_base import GTE
-
 from dotenv import load_dotenv
+
 import os
+import fitz
+import time
+import torch
 
 load_dotenv()
-
 class RagController:
     def __init__(self):
         '''
@@ -42,6 +48,22 @@ class RagController:
             api_key=self.GEMINI_API_KEY
         )
         
+    def is_text_extractable(self, docs, threshold=200):
+            '''
+                Checks if the extracted documents have enough text per page.
+            '''
+            if not docs:
+                return False
+                
+            try:
+                total_chars = sum(len(d.page_content) for d in docs)
+                avg_chars = total_chars / len(docs)
+                return avg_chars > threshold
+            
+            except Exception as e:
+                print(f"Error checking text length: {e}")
+                return False
+        
     def load_and_process_pdf(self, file_path):
         '''
             Load the pdf file content and process it
@@ -50,14 +72,73 @@ class RagController:
             Returns:
                 Text content 
         '''
-        loader = PyMuPDFLoader(file_path) 
-        return loader.load()
-
-
-    def ingest_docs(self, docs: list, parent_chunk_size: int = 1000, child_chunk_size: int=200):
-        '''
-            Using small-to-big to chunk texts
-        '''
+        print(f"--> [TIMING] Attempting PyMuPDF extraction on {file_path}...")
+        start_pymupdf = time.perf_counter()
+        
+        try:
+            loader = PyMuPDFLoader(file_path)
+            docs = loader.load()
+        except Exception as e:
+            print(f"PyMuPDF failed completely: {e}")
+            docs = []
+        
+        end_pymupdf = time.perf_counter()
+            
+        if self.is_text_extractable(docs):
+            print(f"--> [SUCCESS] Native PDF detected. Extraction finished in {end_pymupdf - start_pymupdf:.4f} seconds.")
+            return docs
+        
+        # Fallback: Using OCR for scanned PDF file
+        use_gpu = torch.cuda.is_available()
+        print(f"GPU Available for OCR: {use_gpu}")
+        device = AcceleratorDevice.CUDA if use_gpu else AcceleratorDevice.CPU
+        
+        pipeline_options = PdfPipelineOptions(
+            allow_external_plugins=True,
+            do_ocr = True,
+            accelerator_options = AcceleratorOptions(device=device)
+            )
+        
+        pipeline_options.ocr_options = EasyOcrOptions(
+            lang=["vi", "en"],
+        )
+        
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        
+        loader = DoclingLoader(file_path, converter=converter)
+        
+        docs = []
+        
+        try:
+            print(f"--> [TIMING] Scanned PDF detected. Starting Docling OCR on {file_path}. This may take a while...")
+            start_ocr = time.perf_counter()
+            
+            doc_iter = loader.lazy_load()
+            for doc in doc_iter:
+                docs.append(doc)
+                
+            end_ocr = time.perf_counter()
+            print(f"--> [TIMING] Docling OCR finished in {end_ocr - start_ocr:.4f} seconds.")
+        except Exception as e:
+            print(f"Error loading document(s) from {file_path}: {e}")
+            
+        return docs
+    
+    def ingest_docs(self, docs: list, parent_chunk_size: int = 1000, child_chunk_size: int=200, batch_size = 200):
+        """
+        Chunk documents using a hierarchical "small-to-big" approach for optimized retrieval.
+        Note:
+        - The maximum batch size supported by ChromaDB is 5461 documents.
+        - The batch_size parameter is set to 50 to prevent overloading the vector database,
+        - A pdf page full of text is about 3000 characters. -> ~4 parents, each parents have ~6 child => 24 child chunks each page
+            -> The maximum capacity is 227 pages
+            -> Set batch_size to 150-200 is the sweet spot
+        This ensures stable ingestion and efficient use of system resources.
+        """
         parent_splitter = RecursiveCharacterTextSplitter(
             chunk_size = parent_chunk_size,
             length_function = len,
@@ -79,12 +160,26 @@ class RagController:
             parent_splitter=parent_splitter
         )
         
+        print(f"--> [TIMING] Starting embedding generation and ChromaDB ingestion for {len(docs)} documents...")
+        
+        start_embed = time.perf_counter()
         # Add data top retriever
-        self.small2big_retriever.add_documents(docs)
+        
+        for i in range(0, len(docs), batch_size):
+            batch = docs[i : i + batch_size]
+            self.small2big_retriever.add_documents(batch)
+        
+        end_embed = time.perf_counter()
+        print(f"--> [TIMING] Embedding and ingestion finished in {end_embed - start_embed:.4f} seconds.")
           
     def index_data(self, file_path):
         file_content = self.load_and_process_pdf(file_path)
-        self.ingest_docs(file_content)
+        clean_docs = filter_complex_metadata(file_content)
+        for idx, doc in enumerate(clean_docs[:5], 1):
+            print(f'Doc {idx} page content:\n{doc.page_content}\n{"-" * 50}')
+        self.ingest_docs(clean_docs)
+        
+        return len(clean_docs)
     
     def ask(self, question, history=None, max_turns=5):
         @tool(response_format="content_and_artifact")
@@ -151,11 +246,11 @@ class RagController:
         
     def test(self):
         # Test the retrieve_doc function
-        test_file = r"D:\Pycharm projects\RAG_agent\src\interview.pdf"
+        #test_file = r"D:\Pycharm projects\RAG_agent\src\congress.pdf"
+        test_file = r"D:\Pycharm projects\RAG_agent\src\tri_tue_nhan_tao.pdf"
         query = "what is author name?"
         if os.path.exists(test_file):
             try:
-                import time
 
                 # Time the indexing step
                 start_index = time.perf_counter()
