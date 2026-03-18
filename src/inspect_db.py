@@ -49,30 +49,34 @@ def inspect(
         print(f"Total documents: {count}")
         print(f"{'='*60}")
 
-        if count == 0:
-            continue
+        # if count == 0:
+        #     continue
 
-        include = ["documents", "metadatas"]
-        if show_embeddings:
-            include.append("embeddings")
+        # include = ["documents", "metadatas"]
+        # if show_embeddings:
+        #     include.append("embeddings")
 
-        results = collection.get(include=include)
+        # results = collection.get(include=include)
 
-        for i in range(count):
-            doc = results["documents"][i] if results["documents"] else None
-            meta = results["metadatas"][i] if results["metadatas"] else None
-            doc_id = results["ids"][i] if results["ids"] else None
+        # for i in range(count):
+        #     doc = results["documents"][i] if results["documents"] else None
+        #     meta = results["metadatas"][i] if results["metadatas"] else None
+        #     doc_id = results["ids"][i] if results["ids"] else None
 
-            print(f"\n--- Document {i + 1} (id: {doc_id}) ---")
-            if meta:
-                for k, v in meta.items():
-                    print(f"  {k}: {v}")
-            if doc:
-                preview = (doc[:preview_length] + "...") if len(doc) > preview_length else doc
-                print(f"  Content ({len(doc)} chars): {preview!r}")
-            if show_embeddings and len(results["embeddings"]) > 0:
-                emb = results["embeddings"][i]
-                print(f"  Embedding dim: {emb if emb is not None else 0}")
+        #     print(f"\n--- Document {i + 1} (id: {doc_id}) ---")
+        #     if meta:
+        #         for k, v in meta.items():
+        #             print(f"  {k}: {v}")
+        #     if doc:
+        #         preview = (doc[:preview_length] + "...") if len(doc) > preview_length else doc
+        #         print(f"  Content ({len(doc)} chars): {preview!r}")
+        #     if show_embeddings and len(results["embeddings"]) > 0:
+        #         emb = results["embeddings"][i]
+        #         if emb is not None:
+        #             emb_preview = emb[:10] if hasattr(emb, "__getitem__") else emb
+        #             print(f"  Embedding (first 10): {emb_preview} (dim: {len(emb) if hasattr(emb, '__len__') else 'unknown'})")
+        #         else:
+        #             print("  Embedding: None")
 
 if __name__ == "__main__":
     inspect()

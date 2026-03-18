@@ -17,7 +17,7 @@ class GTE(Embeddings):
         
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path)
         
-        self.device = torch.device("cpu")
+        self.device = torch.device("cuda")
         self.model = self.model.to(self.device)
         
         self.batch_size = batch_size 

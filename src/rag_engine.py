@@ -1,32 +1,26 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_classic.retrievers import ParentDocumentRetriever
-
-from langchain_community.document_loaders import PyMuPDFLoader
-from langchain_classic.storage import LocalFileStore
+from langchain_core.documents import Document
+from langchain_classic.storage import LocalFileStore, create_kv_docstore
 from langchain_chroma import Chroma
-
-from langchain_community.vectorstores.utils import filter_complex_metadata
 
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
+from dotenv import load_dotenv
 
 from src.models.embeddings.gte_multi_base import GTE
-from dotenv import load_dotenv
-from pathlib import Path
-from langchain_core.documents import Document
-  
+
 import os
-import torch
-import time
 import requests
+import time
 
 load_dotenv()
 
-# DEFINE VARIABLES
+# DECLARE VARIABLES
 PARENT_CHUNK_SIZE = 1000
 CHILD_CHUNK_SIZE = 200
-COLAB_URL= ""
+CLOUDFLARE_URL= os.getenv("CLOUDFLARE_URL")
 
 class RagController:
     def __init__(self):
@@ -67,14 +61,14 @@ class RagController:
             separators=["\n\n", "\n", " ", ""]
         )
         
+        fs = LocalFileStore("./data/docstore") 
+        
         self.small2big_retriever = ParentDocumentRetriever(
             vectorstore=self.vector_db,
-            docstore=self.store,
+            docstore=create_kv_docstore(fs),
             child_splitter=child_splitter,
             parent_splitter=parent_splitter
         )
-        
-        self.store = LocalFileStore("./data/docstore")  
         
     def ingest_docs(self, docs: list, batch_size = 200):
         """
@@ -87,25 +81,49 @@ class RagController:
             -> Set batch_size to 150-200 is the sweet spot
         This ensures stable ingestion and efficient use of system resources.
         """
-        # Add data top retriever
-        for i in range(0, len(docs), batch_size):
-            batch = docs[i : i + batch_size]
+        if not docs:
+            return
+        
+        # Check duplicate documents in the vector database
+        existing = self.vector_db.get()
+        ingested_keys = set(
+            (m["source"], m["page"]) for m in existing["metadatas"]
+        )
+        new_docs = [
+            d for d in docs
+            if (d.metadata.get("source"), d.metadata.get("page")) not in ingested_keys
+        ]
+        
+        skipped = len(docs) - len(new_docs)
+        if skipped:
+            print(f"-> [ingest_docs]: Skipping {skipped} already ingested pages")
+
+        if not new_docs:
+            print(f"-> [ingest_docs]: All documents already ingested, skipping...")
+            return
+        
+        for i in range(0, len(new_docs), batch_size):
+            batch = new_docs[i : i + batch_size]
             self.small2big_retriever.add_documents(batch)
             
     def ingest_legal_docs(self):
-        print("Sending ingestion request to Colab...")
-        
         try:
-            response = requests.post(
-                f"{COLAB_URL}/ingest",
-                timeout=3600  # 1 hour for large collections
+            response = requests.get(
+                f"{CLOUDFLARE_URL}/ingest",
+                timeout=180
             )
+            
+            print(f"-> response: {response}")
             response.raise_for_status()
             data = response.json()
             
             if data["status"] != "ok":
                 raise RuntimeError(data.get("message", "Unknown error"))
             
+            documents = data["documents"]
+            print(f"-> [ingest_legal_docs]: Received {len(documents)} documents")
+            
+            all_docs = []
             for document in data["documents"]:
                 jurisdiction_meta = document["jurisdiction"]
                 domain_meta = document["domain"]
@@ -125,20 +143,26 @@ class RagController:
                         }
                     )
                     for i, page_text in enumerate(document["pages"])
-                    if page_text.strip()  # skip empty pages
+                    if page_text.strip() 
                 ]
+                all_docs.extend(docs)
                 
-                clean_docs = filter_complex_metadata(docs)
-                
-                # Send to ChromaDB
-                self.ingest_docs(clean_docs)
-                print(f"✅ Done: {source}")
+            # Send to ChromaDB
+            t0 = time.perf_counter()
+            self.ingest_docs(all_docs)
+            t1 = time.perf_counter()
+            print(f"-> [ingest_legal_docs]: all docs are ingested in {t1 - t0: .4f}")
                 
         except requests.exceptions.ConnectionError:
             print("ERROR: Cannot reach Colab. Is the tunnel still running?")
+            raise
+        except requests.exceptions.Timeout:
+            print("-> [ingest_legal_docs]: Request timed out after 1 hour")
+            raise
         except Exception as e:
             print(f"Ingestion failed: {e}")
-   
+            raise
+        
     def ask(self, question, jurisdiction, domain, history=None, max_turns=5):
         @tool(response_format="content_and_artifact")
         def retrieve_doc(query:str) -> tuple:
@@ -219,36 +243,43 @@ class RagController:
         for chunk in agent.stream(input=inputs, stream_mode="values"):
             response = chunk
 
+        messages = response["messages"]
+
+        # Extract key messages
+        human_msg   = messages[0]
+        tool_call   = messages[1]  # AIMessage with function_call
+        tool_result = messages[2]  # ToolMessage with retrieved docs
+        final_ans   = messages[-1] # Final AIMessage
+
+        # ─── Query ────────────────────────────────────────────
+        print(f"-> [ask]: Query: {human_msg.content}")
+
+        # ─── Retrieval ────────────────────────────────────────
+        print(f"-> [ask]: Retrieved {len(tool_result.artifact)} chunks | "
+            f"Sources: {set(d.metadata['source'] for d in tool_result.artifact)} | "
+            f"Pages: {[d.metadata['page'] for d in tool_result.artifact]}")
+
+        # ─── Token Usage ──────────────────────────────────────
+        t1 = tool_call.usage_metadata
+        t2 = final_ans.usage_metadata
+        print(f"-> [ask]: Tokens | "
+            f"Call 1: {t1['total_tokens']} | "
+            f"Call 2: {t2['total_tokens']} | "
+            f"Total: {t1['total_tokens'] + t2['total_tokens']}")
+        
         if response and "messages" in response:
             return response["messages"][-1].content
         return "No response"
         
-    def test(self):
+    def _test(self):
         print("\n" + "="*50)
         print("🚀 STARTING RAG CONTROLLER TEST")
         print("="*50)
-
-        # 1. Define the test paths
-        # Your ingest_legal_docs function looks for Path(base_directory).parent / "legal_docs"
-        # We will pass the current working directory as the base.
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        legal_docs_dir = Path(current_dir).parent / "legal_docs"
-
-        print(f"📂 Looking for documents in: {legal_docs_dir}")
         
-        if not legal_docs_dir.exists():
-            print(f"⚠️  TEST HALTED: Directory '{legal_docs_dir}' does not exist.")
-            print("Please create the following folder structure to run the test:")
-            print("  legal_docs/")
-            print("  └── Vietnam/")
-            print("      └── Labor_Law.pdf")
-            return
-
         # 2. Run the ingestion pipeline
         print("\n⚙️  STEP 1: Ingesting Documents...")
         try:
-            self.ingest_legal_docs(base_directory=current_dir)
-            print("✅ Ingestion complete.")
+            self.ingest_legal_docs()
         except Exception as e:
             print(f"❌ Ingestion failed: {e}")
             return
@@ -257,9 +288,9 @@ class RagController:
         print("\n🤖 STEP 2: Testing the LLM Agent...")
         
         # Test parameters that match the expected folder/file structure
-        test_jurisdiction = "United States"
+        test_jurisdiction = "VietNam"
         test_domain = "AI Law"
-        test_question = "What are the standard working hours according to this document?"
+        test_question = "Khi nào hệ thống trí tuệ nhân tạo bị coi là rủi ro cao ?"
         
         print(f"   Jurisdiction: {test_jurisdiction}")
         print(f"   Domain:       {test_domain}")
@@ -281,22 +312,16 @@ class RagController:
         except Exception as e:
             print(f"\n❌ Query failed: {e}")
             
-    def test_orc(self):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        legal_docs_dir = Path(current_dir).parent / "legal_docs" / "Vietnam" / "Labor_Law.pdf"
+    def _test_process_pdf(self):
+        self.ingest_legal_docs()
         
-        docs = self.load_and_process_docs(str(legal_docs_dir))
-        print(f"\nLoaded {len(docs)} document(s) from {legal_docs_dir}")
-        for i, doc in enumerate(docs):
-            print(f"\n--- Document {i+1} ---")
-            print(f"Metadata: {doc.metadata}")
-            print("Content Preview:")
-            print(doc.page_content[:10] + ("..." if len(doc.page_content) > 500 else ""))
+def check_connection():
+    response = requests.get(
+        f"{CLOUDFLARE_URL}/health",
+        timeout=60
+    )
+    print(response.text)
         
-        
-        
-            
-if __name__ == "__main__":
-    rag = RagController()
-    rag.test()
-    
+# if __name__ == "__main__":
+#     rag = RagController()
+#     rag._test_process_pdf()
