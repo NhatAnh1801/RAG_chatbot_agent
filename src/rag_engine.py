@@ -38,7 +38,6 @@ class RagController:
         self.embedding_model = GTE()
         
         google_model = "google_genai:gemini-flash-lite-latest"
-        #google_model = "google_genai:gemini-2.0-flash-lite"
         self.llm_model = init_chat_model(
             model=google_model,
             api_key=GEMINI_API_KEY
@@ -239,7 +238,19 @@ class RagController:
                         "page": doc.metadata.get("page")
                     }
         return None
-            
+    
+    def _extract_contexts(self, messages) -> list[str]:
+        """
+            Extract the contexts from agent response, used for evaluation.
+        """
+        contexts = []
+        for msg in messages:
+            if hasattr(msg, "type") and msg.type == "tool" and hasattr(msg, "artifact"):
+                if msg.artifact:
+                    for doc in msg.artifact:
+                        contexts.append(doc.page_content)
+        return contexts
+    
     def ask(self, agent, question, history=None, max_turns=5):
         messages = []
         if history:
@@ -257,13 +268,13 @@ class RagController:
         response = None
         for chunk in agent.stream(input=inputs, stream_mode="values"):
             response = chunk    
-            print(f"-> [ask]: Received chunk: {chunk}")
+            # print(f"-> [ask]: Received chunk: {chunk}")
 
         messages = response["messages"]
         final_ans = messages[-1].content
         
-        print(f"-> [ask]: messages from agent:\n{messages}")
-        print(f"-> [ask]: Final answer content:\n{final_ans}")
+        # print(f"-> [ask]: messages from agent:\n{messages}")
+        # print(f"-> [ask]: Final answer content:\n{final_ans}")
         
         # Debug token usage
         for msg in messages:
@@ -273,47 +284,15 @@ class RagController:
                     f"total: {msg.usage_metadata.get('total_tokens')}")
         
         source_info = self._extract_source_info(messages)
+        contexts = self._extract_contexts(messages)
+        
         return {
             "type": "document_based" if source_info else "general",
             "source": source_info.get("source") if source_info else None,
             "page": source_info.get("page") if source_info else None,
-            "answer": final_ans
+            "answer": final_ans,
+            "context": contexts
         }
-    
-    def _test(self):
-        print("\n" + "="*50)
-        print("🚀 STARTING RAG CONTROLLER TEST")
-        print("="*50)
-        
-        # print("\n⚙️  STEP 1: Ingesting Documents...")
-        # try:
-        #     self.ingest_legal_docs()
-        # except Exception as e:
-        #     print(f"❌ Ingestion failed: {e}")
-        #     return
-        
-        print("\n🤖 STEP 2: Testing the LLM Agent...")
-        
-        # Test parameters that match the expected folder/file structure
-        test_jurisdiction = "Vietnam"
-        #test_domain = "Enterprise Law"
-        test_domain = "AI law"
-        test_question = "Khi nào hệ thống trí tuệ nhân tạo bị coi là rủi ro cao ?"
-        #test_question = "Đất nước cuba nằm ở đâu?"
-        try:
-            agent = self.build_legal_agent(test_jurisdiction, test_domain)
-            response = self.ask(
-                question=test_question,
-                agent=agent
-            )
-            
-            print("\n" + "="*50)
-            print("🎯 AGENT RESPONSE:")
-            print("="*50)
-            print(response)
-            
-        except Exception as e:
-            print(f"\n❌ Query failed: {e}")
             
     def _test_process_pdf(self):
         self.ingest_legal_docs()
