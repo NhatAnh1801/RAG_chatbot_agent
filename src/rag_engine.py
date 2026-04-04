@@ -272,6 +272,8 @@ class RagController:
 
         messages = response["messages"]
         final_ans = messages[-1].content
+        if isinstance(final_ans, list):
+            final_ans = " ".join(block["text"] for block in final_ans if block.get("type") == "text")
         
         # print(f"-> [ask]: messages from agent:\n{messages}")
         # print(f"-> [ask]: Final answer content:\n{final_ans}")
@@ -291,19 +293,9 @@ class RagController:
             "source": source_info.get("source") if source_info else None,
             "page": source_info.get("page") if source_info else None,
             "answer": final_ans,
-            "context": contexts
+            "contexts": contexts
         }
             
     def _test_process_pdf(self):
         self.ingest_legal_docs()
-        
-def check_connection():
-    response = requests.get(
-        f"{CLOUDFLARE_URL}/health",
-        timeout=60
-    )
-    print(response.text)
-        
-# if __name__ == "__main__":
-#     rag = RagController()
-#     rag._test()
+    
