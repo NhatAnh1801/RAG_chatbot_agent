@@ -1,0 +1,8 @@
+[
+  {
+    "question": "Trí tuệ nhân tạo được pháp luật Việt Nam định nghĩa như thế nào?",
+    "ground_truth": "Trí tuệ nhân tạo là việc thực hiện bằng điện tử từ các năng lực trí tuệ của con người, bao gồm học tập, suy luận, nhận thức, phán đoán và hiểu ngôn ngữ tự nhiên.",
+    "jurisdiction": "Vietnam",
+    "domain": "AI law"
+  }
+]
