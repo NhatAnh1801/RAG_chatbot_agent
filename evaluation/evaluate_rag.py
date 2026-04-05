@@ -22,7 +22,8 @@ import os
 
 load_dotenv()  
 
-test_data_path = "evaluation/dataset/test_data.json"
+evaluation_dataset_path = "evaluation/dataset/evaluation_dataset.json"
+validation_dataset_path = "evaluation/dataset/validation_dataset.json"
  
 class RagEvaluator:
     def __init__(self):
@@ -41,7 +42,7 @@ class RagEvaluator:
         print(f"self.llm: {self.llm}")
         self.rag_controller = RagController()
         
-        with open(test_data_path, "r", encoding="utf-8") as f:
+        with open(validation_dataset_path, "r", encoding="utf-8") as f:
             self.test_data = json.load(f)    
             
     def generate_legal_evaluation_samples(self, evaluation_dataset: list[dict]) -> list:
