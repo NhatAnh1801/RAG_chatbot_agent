@@ -13,14 +13,14 @@ st.set_page_config(
 # This dictionary maps the jurisdiction to its specific legal domains.
 LEGAL_HIERARCHY = {
     "Vietnam": [
-        "AI law", 
+        "AI Law", 
         "Labor Law", 
         "Enterprise Law",
         "Civil Law"
     ],
-    "United States": [
-        "Civil Procedure"
-    ]
+    # "United States": [
+    #     "Civil Procedure"
+    # ]
 }
 
 # --- 2. Session State Initialization ---

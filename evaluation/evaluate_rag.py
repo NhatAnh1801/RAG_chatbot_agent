@@ -2,16 +2,12 @@ import traceback
 from ragas import EvaluationDataset, evaluate
 from ragas.embeddings.base import embedding_factory
 from ragas.llms import llm_factory
-from ragas import Dataset, experiment
-from langchain.chat_models import init_chat_model
 from ragas.metrics.collections import (
     Faithfulness,
     AnswerRelevancy,
     ContextPrecision,
     ContextRecall
 )
-import litellm
-from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
 from src.rag_engine import RagController
