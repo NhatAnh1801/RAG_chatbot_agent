@@ -7,10 +7,12 @@ from langchain_chroma import Chroma
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
-from dotenv import load_dotenv
 
 from src.models.embeddings.gte_multi_base import GTE
 from src.prompt import*
+
+from collections import Counter
+from dotenv import load_dotenv
 
 import os
 import requests
@@ -26,6 +28,9 @@ BM25_PATH = "./data/bm25/bm25_retriever.pkl"
 BM25_HASH_PATH = "./data/bm25/bm25_content.hash"
 CLOUDFLARE_URL= os.getenv("CLOUDFLARE_URL")
 
+from transformers import logging
+logging.set_verbosity_error()
+
 class RagController:
     def __init__(self):
         # Validate API key
@@ -35,7 +40,8 @@ class RagController:
         
         # Models
         self.embedding_model = GTE()
-        google_model = "google_genai:gemini-flash-lite-latest"
+        #google_model = "google_genai:gemini-flash-lite-latest"
+        google_model = "google_genai:gemini-2.5-flash-lite"
         self.llm_model = init_chat_model(
             model=google_model,
             api_key=GEMINI_API_KEY
@@ -71,8 +77,6 @@ class RagController:
             }
 
             documents = data["documents"]
-            for document in documents:
-                print(document.keys())
             print(f"-> [ingest_legal_docs]: Received {len(documents)} documents")
             
             parent_docs = {}    
@@ -168,8 +172,8 @@ class RagController:
         if isinstance(final_ans, list):
             final_ans = " ".join(block["text"] for block in final_ans if block.get("type") == "text")
         
-        # print(f"-> [ask]: messages from agent:\n{messages}")
-        # print(f"-> [ask]: Final answer content:\n{final_ans}")
+        # print(f"[ask]: messages from agent:\n{messages}")
+        # print(f"[ask]: agent answer:\n{final_ans}")
         
         # Debug token usage
         for msg in messages:
@@ -281,10 +285,19 @@ class RagController:
                     if d.metadata.get("jurisdiction") == jurisdiction
                     and d.metadata.get("domain") == domain
                 ]
+                
+                print(f"[retrieve_doc]: child chunks retrieved: \n{retrieved_child_chunks}")
 
                 # 3. Fetch parents
-                parent_ids = list({r.metadata["parent_id"] for r in retrieved_child_chunks})
-                parents = self.doc_store.mget(parent_ids)
+                # This will be replaced by reranking 
+                parent_counts = Counter(
+                    r.metadata["parent_id"] for r in retrieved_child_chunks
+                )
+                top_parent_ids = [
+                    pid for pid, _ in parent_counts.most_common(1)  # Get the top 1 most related parent chunk
+                ]
+                
+                parents = self.docstore.mget(top_parent_ids)
                 parents = [p for p in parents if p is not None]
                 
                 serialized = "\n\n".join(
@@ -324,6 +337,37 @@ class RagController:
                         contexts.append(doc.page_content)
         return contexts
 
-if __name__ == "__main__":
-    controller = RagController()
-    controller.ingest_legal_docs()
+# if __name__ == "__main__":
+    #rag = RagController()
+    # query = "Trí tuệ nhân tạo là gì?"
+    # agent = rag.build_legal_agent("Vietnam", "AI Law")
+    # result = rag.ask(agent, "Thế nào là trí tuệ nhân tạo?")
+    # retriever = rag._hybrid_retriever()
+    # documents = retriever.invoke(query)
+    # print(f"Number of documents retrieved: {len(documents)}")
+    # # for doc in documents:  
+    # #     print("--"*50)
+    # #     print(f"{doc}\n")
+    # filtered = [
+    #     d for d in documents
+    #     if d.metadata.get("jurisdiction") == "Vietnam"
+    #     and d.metadata.get("domain") == "AI Law"
+    # ]
+    
+    # parent_counts = Counter(
+    #     r.metadata["parent_id"] for r in documents
+    # )
+    # top_parent_ids = [
+    #     pid for pid, _ in parent_counts.most_common(1)
+    # ]
+
+    # # Fetch only top parents
+    # parents = [p for p in top_parent_ids if p is not None]
+    # print(f"parent_ids: {top_parent_ids}")
+    # parents = rag.docstore.mget(top_parent_ids)
+    # parents = [p for p in parents if p is not None]
+    # for parent in parents:
+    #     print("--"*50)
+    #     print(f"{parent}\n")
+    
+   
