@@ -12,16 +12,16 @@ A personal end-to-end Retrieval-Augmented Generation (RAG) system that helps loo
 * [Project Structure](#project-structure)
 * [Limitations](#limitations)
 * [Future implementations](#future-implementations)
+
 ---
 
 ## Features
-- **Vietnam-first, extensible by design**: Focused on Vietnamese legal documents at launch, with a pluggable jurisdiction layer so foreign laws can be added later.
-- **Domain-specific filtering**: Narrow searches to specific legal fields. Currently supports **AI Law**, **Labor Law**, and **Cybersecurity Law**, with more domains to be added.
-- **Small-to-Big retrieval**: Parent-Child chunking strategy for precise matching with full contextual answers.
+- **Scope**: Currently covers Vietnamese law across AI, Labor, and Cybersecurity domains. More jurisdictions and domains will be added in the near future.
+- **Small-to-Big retrieval**: Parent-Child chunking - matches on small chunks for precision, then returns the parent section so the LLM has full context.
 - **Hybrid search**: Combines BM25 (lexical) and vector search (semantic) to catch both exact legal terminology and paraphrased queries.
-- **Parent-document references**: Each retrieved chunk is returned together with its parent context.
-- **Conversation memory**: Maintains chat history so follow-up questions work naturally.
-- **Source citations**: Every answer returns the exact quoted passage from the document together with the source filename, so users can double-check against the original.
+- **Conversation memory**: Retains chat history so the assistant can resolve references in follow-up questions.
+- **Source citations**: Every answer returns the exact quoted passage together with the source filename, so users can verify against the original document.
+
 ---
 
 ## Architecture
@@ -81,14 +81,14 @@ flowchart TD
 
 ## How It Works
 ### 1. Document ingestion
-Text-based PDFs are parsed with **PyMuPDF**; scanned PDFs fall back to **Docling + EasyOCR**.
+Text-based PDFs are parsed with PyMuPDF; scanned PDFs fall back to Docling + EasyOCR.
  
 ### 2. Small-to-Big chunking (hierarchy-driven)
 Instead of fixed-size character chunks, the splitter reads the structural headers of the legal document and builds a parent-child tree based on their hierarchy. Vietnamese legal documents follow this hierarchy (from largest to smallest):
 
 `Phần → Chương → Mục → Tiểu mục → Điều`
 
-Not every document uses every level — some laws only have `Chương` and `Điều`, others go deeper. The splitter therefore works dynamically:
+Not every document uses every level - some laws only have `Chương` and `Điều`, others go deeper. The splitter therefore works dynamically:
 
 - It scans the document to find the **smallest header level actually present**, and sets that as the **child** chunk.
 - The next larger header found in the document becomes the **parent**.
@@ -169,8 +169,8 @@ Then in the UI:
 ---
 
 ## Limitations
-- **OCR accuracy on Vietnamese**: EasyOCR has relatively low accuracy on Vietnamese diacritics and is slow — **~120–130 seconds for 30 scanned pages on a T4 GPU**. For larger documents (~80 pages) processing can take up to ~480 seconds.
-- **GPU constraints**: The development laptop (RTX 3060 6GB) cannot run the GTE embedding model and EasyOCR simultaneously, so OCR has to be offloaded to a cloud GPU.
+- **OCR accuracy on Vietnamese**: EasyOCR has relatively low accuracy on Vietnamese diacritics and is slow (~120–130 seconds for 30 scanned pages on a T4 GPU). For larger documents (~80 pages) processing can take up to ~480 seconds.
+- **GPU constraints**: My laptop (RTX 3060 6GB) cannot run the GTE embedding model and EasyOCR simultaneously, so OCR has to be offloaded to a cloud GPU.
 - **API quota**: Uses the Gemini free tier (100 requests/day), which caps how many questions can be asked per day.
 - **File format**: Currently PDF only.
 - **Jurisdiction**: Currently Vietnamese law only.
@@ -178,9 +178,9 @@ Then in the UI:
 ## Future Implementations 
 - **Cross-encoder reranking**: Add a reranker on top of the hybrid retriever to return the most relevant chunks to the LLM.
 - **Embedding evaluation & fine-tuning**: Benchmark the current GTE model on Vietnamese legal queries and fine-tune if results justify it.
-- **Finer-grained chunking**: Extend the Small-to-Big splitter below `Điều` level — use each `Khoản` as the child and the enclosing `Điều` as the parent - for higher-precision retrieval on long articles.
+- **Finer-grained chunking**: Extend the Small-to-Big splitter below `Điều` level - use each `Khoản` as the child and the enclosing `Điều` as the parent - for higher-precision retrieval on long articles.
 - **Extend to more jurisdictions**: Start with a second country (e.g. United States) once the Vietnamese pipeline is stable.
 - **Evaluation framework**: Systematic evaluation of retrieval quality (hit@k, MRR) and end-to-end answer quality, with parameter tuning.
 - **Broader file format support**: DOCX, HTML, scanned images beyond PDF.
 - **Cloud-hosted vector store**: Migrate ChromaDB to a managed/cloud deployment.
-- **OCR optimization**: Replace/augment EasyOCR with a faster, more Vietnamese-accurate engine (e.g. VietOCR, PaddleOCR).
+- **OCR optimization**: Replace/augment EasyOCR with a faster, more Vietnamese-accurate engine.
