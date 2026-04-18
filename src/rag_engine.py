@@ -87,8 +87,6 @@ class RagController:
                 domain = document["domain"]
                 source = document["source"]
                 
-                print("Jurisdiction:", jurisdiction, "| Domain:", domain, "| Source:", source)
-                
                 for chunk in document["chunks"]:
                     parent_title = chunk["parent"]
                     parent_content = chunk.get("parent_content", "")
@@ -182,14 +180,12 @@ class RagController:
                     f"output: {msg.usage_metadata.get('output_tokens')}, "
                     f"total: {msg.usage_metadata.get('total_tokens')}")
         
-        source_info = self._extract_source_info(messages)
-        contexts = self._extract_contexts(messages)
+        sources = self._extract_source_info(messages)
+        contexts = self._extract_contexts(messages)         # For evaluation
         
         return {
-            "type": "document_based" if source_info else "general",
-            "source": source_info.get("source") if source_info else None,
-            "page": source_info.get("page") if source_info else None,
             "answer": final_ans,
+            "sources": sources,
             "contexts": contexts
         }
     
@@ -285,8 +281,6 @@ class RagController:
                     if d.metadata.get("jurisdiction") == jurisdiction
                     and d.metadata.get("domain") == domain
                 ]
-                
-                print(f"[retrieve_doc]: child chunks retrieved: \n{retrieved_child_chunks}")
 
                 # 3. Fetch parents
                 # This will be replaced by reranking 
@@ -306,8 +300,7 @@ class RagController:
                 )
                 return serialized, parents
             except Exception as e:
-                print(f"Error during document retrieval: {e}")
-                return "An error occurred while retrieving documents.", [] 
+                return f"An error occurred while retrieving documents: {e}", [] 
             
         return retrieve_doc
     
@@ -318,12 +311,15 @@ class RagController:
         for msg in messages:
             if msg.type == "tool" and msg.name == "retrieve_doc":
                 if hasattr(msg, 'artifact') and msg.artifact:
-                    doc = msg.artifact[0]
-                    return {
-                        "source": doc.metadata.get("source"),
-                        "page": doc.metadata.get("page")
-                    }
-        return None
+                    return [
+                        {
+                            "source": doc.metadata.get("source"),
+                            "parent_title": doc.metadata.get("parent_title"),
+                            "content": doc.page_content,
+                        }
+                        for doc in msg.artifact
+                    ]
+        return []  
     
     def _extract_contexts(self, messages) -> list[str]:
         """

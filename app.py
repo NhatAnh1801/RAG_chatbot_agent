@@ -1,4 +1,5 @@
 import streamlit as st
+import re
 import time
 
 from src.rag_engine import RagController
@@ -15,8 +16,7 @@ LEGAL_HIERARCHY = {
     "Vietnam": [
         "AI Law", 
         "Labor Law", 
-        "Enterprise Law",
-        "Civil Law"
+        "Cybersecurity Law",
     ],
     # "United States": [
     #     "Civil Procedure"
@@ -106,25 +106,31 @@ if question:
             with st.spinner(f"Thinking..."):
                 history = st.session_state.messages[1:]
                 response = None
-                
+                sources = []
                 try:
-                    raw_response = st.session_state.rag_controller.ask(
+                    agent_response = st.session_state.rag_controller.ask(
                         agent = st.session_state.agent,
                         question=question,
                         history=history
                     )
-                    response = raw_response["answer"]
-                    type = raw_response["type"]
-                    source = raw_response["source"]
-                    page = raw_response["page"]
+                    response = agent_response["answer"]
+                    sources = agent_response["sources"]
                 except Exception as e:
                     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                        response = "⚠️ API rate limit reached. Please wait a moment and try again."
+                        match = re.search(r"retry in (\d+(?:\.\d+)?)s", str(e), re.IGNORECASE)
+                        wait = int(float(match.group(1))) if match else None
+                        response = f"⚠️ API rate limit reached. Please wait a moment and try again after {wait}s."
                     else:
                         response = f"An error occurred: {str(e)}"
                     
                 st.markdown(response)
-                if type == "document_based":
-                    st.caption(f"📄 Source: `{source}` | Page: {page}")
+                if sources:
+                    st.divider()
+                    st.caption("📎Reference")
+                    for src in sources:
+                        with st.expander(
+                            f"📄 {src['source']} — {src['parent_title']}"
+                        ):
+                            st.text(src.get("content", "Empty"))
 
     st.session_state.messages.append({"role": "assistant", "content": response})
