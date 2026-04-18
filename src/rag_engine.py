@@ -1,256 +1,151 @@
-import json
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_classic.retrievers import ParentDocumentRetriever
 from langchain_core.documents import Document
 from langchain_classic.storage import LocalFileStore, create_kv_docstore
+from langchain_classic.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
 from langchain_chroma import Chroma
 
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
-from dotenv import load_dotenv
 
 from src.models.embeddings.gte_multi_base import GTE
 from src.prompt import*
 
+from collections import Counter
+from dotenv import load_dotenv
+
 import os
 import requests
+import hashlib
 import time
-import re       
+import pickle
+import json  
 
 load_dotenv()   
 
 # DECLARE VARIABLES
-PARENT_CHUNK_SIZE = 1000
-CHILD_CHUNK_SIZE = 200
+BM25_PATH = "./data/bm25/bm25_retriever.pkl"
+BM25_HASH_PATH = "./data/bm25/bm25_content.hash"
 CLOUDFLARE_URL= os.getenv("CLOUDFLARE_URL")
+
+from transformers import logging
+logging.set_verbosity_error()
 
 class RagController:
     def __init__(self):
-        '''
-            Init vector DB and LLM here
-        '''
-        # INIT MODELS
+        # Validate API key
         GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable is not set")
-            
-        self.embedding_model = GTE()
         
-        google_model = "google_genai:gemini-flash-lite-latest"
+        # Models
+        self.embedding_model = GTE()
+        #google_model = "google_genai:gemini-flash-lite-latest"
+        google_model = "google_genai:gemini-2.5-flash-lite"
         self.llm_model = init_chat_model(
             model=google_model,
             api_key=GEMINI_API_KEY
         )
         
-        # Init Chroma as vector database
+        # Vector database
         self.vector_db = Chroma(
             embedding_function=self.embedding_model,
             persist_directory='./data/chromadb'    
         )
-        
-        # INIT SMALL2BIG
-        parent_splitter = RecursiveCharacterTextSplitter(
-            chunk_size = PARENT_CHUNK_SIZE,
-            length_function = len,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", " ", ""]
-        )
-        
-        child_splitter = RecursiveCharacterTextSplitter(
-            chunk_size = CHILD_CHUNK_SIZE,
-            length_function = len,
-            chunk_overlap=50,
-            separators=["\n\n", "\n", " ", ""]
-        )
-        
-        fs = LocalFileStore("./data/docstore") 
-        
-        self.small2big_retriever = ParentDocumentRetriever(
-            vectorstore=self.vector_db,
-            docstore=create_kv_docstore(fs),
-            child_splitter=child_splitter,
-            parent_splitter=parent_splitter,
-            search_kwargs={"k": 2}
-        )
-        
-    def ingest_docs(self, docs: list, batch_size = 200):
-        """
-        Chunk documents using a hierarchical "small-to-big" approach for optimized retrieval.
-        Note:
-        - The maximum batch size supported by ChromaDB is 5461 documents.
-        - The batch_size parameter is set to 50 to prevent overloading the vector database,
-        - A pdf page full of text is about 3000 characters. -> ~4 parents, each parents have ~6 child => 24 child chunks each page
-            -> The maximum capacity is 227 pages
-            -> Set batch_size to 150-200 is the sweet spot
-        This ensures stable ingestion and efficient use of system resources.
-        """
-        if not docs:
-            return
-        
-        # Check duplicate documents in the vector database
-        existing = self.vector_db.get()
-        ingested_keys = set(
-            (m["source"], m["page"]) for m in existing["metadatas"]
-        )
-        new_docs = [
-            d for d in docs
-            if (d.metadata.get("source"), d.metadata.get("page")) not in ingested_keys
-        ]
-        
-        skipped = len(docs) - len(new_docs)
-        if skipped:
-            print(f"-> [ingest_docs]: Skipping {skipped} already ingested pages")
-
-        if not new_docs:
-            print(f"-> [ingest_docs]: All documents already ingested, skipping...")
-            return
-        
-        for i in range(0, len(new_docs), batch_size):
-            batch = new_docs[i : i + batch_size]
-            self.small2big_retriever.add_documents(batch)
-            
+        self.docstore = create_kv_docstore(LocalFileStore("./data/docstore"))
+    
     def ingest_legal_docs(self):
         try:
-            response = requests.get(
-                f"{CLOUDFLARE_URL}/ingest",
-                timeout=180
-            )
+            # response = requests.get(
+            #     f"{CLOUDFLARE_URL}/ingest",
+            #     timeout=180
+            # )
             
-            response.raise_for_status()
-            data = response.json()
+            # response.raise_for_status()
+            # data = response.json()
             
-            if data["status"] != "ok":
-                raise RuntimeError(data.get("message", "Unknown error"))
-            
+            # if data["status"] != "ok":
+            #     raise RuntimeError(data.get("message", "Unknown error"))
+            from pathlib import Path
+            mock_response_path = "./data/json_files/Vietnam"
+            data = {
+                "status": "ok",
+                "documents": [
+                    json.load(open(f,encoding="utf-8")) 
+                    for f in Path(mock_response_path).rglob("*.json")
+                ]
+            }
+
             documents = data["documents"]
             print(f"-> [ingest_legal_docs]: Received {len(documents)} documents")
             
-            all_docs = []
-            for document in data["documents"]:
-                jurisdiction_meta = document["jurisdiction"]
-                domain_meta = document["domain"]
+            parent_docs = {}    
+            child_docs = []
+            
+            for document in documents:
+                jurisdiction = document["jurisdiction"]
+                domain = document["domain"]
                 source = document["source"]
                 
-                print(f"Ingesting: {jurisdiction_meta} -> {domain_meta}")
-                
-                # Wrap pages into LangChain Documents
-                docs = [
-                    Document(
-                        page_content=page_text,
+                for chunk in document["chunks"]:
+                    parent_title = chunk["parent"]
+                    parent_content = chunk.get("parent_content", "")
+                    
+                    parent_id = hashlib.md5(f"{source}__{parent_title})".encode()).hexdigest()
+                    
+                    parent_docs[parent_id] = Document(
+                        page_content=parent_content,
                         metadata={
-                            "jurisdiction": jurisdiction_meta,
-                            "domain": domain_meta,
-                            "source": source,
-                            "page": i
+                            "parent_id": parent_id,
+                            "parent_title": parent_title,
+                            "jurisdiction": jurisdiction,
+                            "domain": domain,
+                            "source": source
                         }
                     )
-                    for i, page_text in enumerate(document["pages"])
-                    if page_text.strip() 
-                ]
-                all_docs.extend(docs)
+                    
+                    for child in chunk["children"]:
+                        child_id = hashlib.md5(f"{source}__{child['title']}".encode()).hexdigest()
+                        
+                        child_docs.append(Document(
+                            page_content=child["content"],
+                            metadata={
+                                "child_id": child_id,
+                                "parent_id": parent_id,  
+                                "parent_title": parent_title,
+                                "child_title": child["title"],
+                                "jurisdiction": jurisdiction,
+                                "domain": domain,
+                                "source": source,
+                            }
+                        ))
                 
             # Send to ChromaDB
             t0 = time.perf_counter()
-            self.ingest_docs(all_docs)
+            
+            self._add_child_and_parent_documents(child_docs=child_docs, parent_docs=parent_docs)
+            
             t1 = time.perf_counter()
-            print(f"-> [ingest_legal_docs]: all docs are ingested in {t1 - t0: .4f}")
+            print(f"[ingest_legal_docs]: all docs are ingested in {t1 - t0: .4f}")
                 
         except requests.exceptions.ConnectionError:
             print("ERROR: Cannot reach Colab. Is the tunnel still running?")
             raise
         except requests.exceptions.Timeout:
-            print("-> [ingest_legal_docs]: Request timed out after 1 hour")
+            print("[ingest_legal_docs]: Request timed out after 1 hour")
             raise
         except Exception as e:
             print(f"Ingestion failed: {e}")
             raise
-
-    def get_retrieved_docs(self, jurisdiction: str, domain: str):
-        # Verify if the jurisdiction and domain are valid
-        if jurisdiction not in set(m["jurisdiction"] for m in self.vector_db.get()["metadatas"]):
-            raise ValueError(f"Invalid jurisdiction: {jurisdiction}")
-        if domain not in set(m["domain"] for m in self.vector_db.get()["metadatas"]):
-            raise ValueError(f"Invalid domain: {domain}")
-        
-        @tool(response_format="content_and_artifact")
-        def retrieve_doc(query:str) -> tuple:
-            """
-                Query documents from the user's question.
-                Args:
-                    query: The user's question or search query.
-                    jurisdiction: The jurisdiction to filter by.
-                    domain: The domain to filter by.
-                Returns:
-                    A tuple of (serialized text, list of Document objects).
-            """
-            try:
-                self.small2big_retriever.vectorstore.search_kwargs = {
-                    "filter": {
-                        "$and": [
-                            {"jurisdiction": {"$eq": jurisdiction}},
-                            {"domain": {"$eq": domain}}
-                        ]
-                    }
-                }
-                
-                retrieved_docs = self.small2big_retriever.invoke(query)
-                serialized = "\n\n".join(
-                    f"Source: {doc.metadata}\nContent: {doc.page_content}"
-                    for doc in retrieved_docs
-                )
-                return serialized, retrieved_docs
-            except Exception as e:
-                print(f"Error during document retrieval: {e}")
-                return "An error occurred while retrieving documents.", []
-            
-        return retrieve_doc
     
-    def get_system_prompt(self, jurisdiction, domain):
-        return system_prompt.format(jurisdiction=jurisdiction, domain=domain)
-    
-    def parse_response(self, response):
-        try:
-            clean = re.sub(r"```json|```", "", response).strip()
-            if not clean.endswith("}"):
-                clean += "}"
-            return json.loads(clean)
-        except Exception as e:
-            print(f"Error parsing response: {e}")
-            return None
-        
     def build_legal_agent(self, jurisdiction, domain):
-        # build the RAG agent with the LLM, retrieval tools, and system prompt
-        retrieve_doc = self.get_retrieved_docs(jurisdiction, domain)
+        retrieve_doc = self._get_retrieved_docs(jurisdiction, domain)
         return create_agent(
             model=self.llm_model,
             tools=[retrieve_doc],
-            system_prompt=self.get_system_prompt(jurisdiction, domain)
+            system_prompt=self._get_system_prompt(jurisdiction, domain)
         )
-     
-    def _extract_source_info(self, messages):
-        for msg in messages:
-            if msg.type == "tool" and msg.name == "retrieve_doc":
-                if hasattr(msg, 'artifact') and msg.artifact:
-                    doc = msg.artifact[0]
-                    return {
-                        "source": doc.metadata.get("source"),
-                        "page": doc.metadata.get("page")
-                    }
-        return None
-    
-    def _extract_contexts(self, messages) -> list[str]:
-        """
-            Extract the contexts from agent response, used for evaluation.
-        """
-        contexts = []
-        for msg in messages:
-            if hasattr(msg, "type") and msg.type == "tool" and hasattr(msg, "artifact"):
-                if msg.artifact:
-                    for doc in msg.artifact:
-                        contexts.append(doc.page_content)
-        return contexts
-    
+        
     def ask(self, agent, question, history=None, max_turns=5):
         messages = []
         if history:
@@ -275,8 +170,8 @@ class RagController:
         if isinstance(final_ans, list):
             final_ans = " ".join(block["text"] for block in final_ans if block.get("type") == "text")
         
-        # print(f"-> [ask]: messages from agent:\n{messages}")
-        # print(f"-> [ask]: Final answer content:\n{final_ans}")
+        # print(f"[ask]: messages from agent:\n{messages}")
+        # print(f"[ask]: agent answer:\n{final_ans}")
         
         # Debug token usage
         for msg in messages:
@@ -285,17 +180,190 @@ class RagController:
                     f"output: {msg.usage_metadata.get('output_tokens')}, "
                     f"total: {msg.usage_metadata.get('total_tokens')}")
         
-        source_info = self._extract_source_info(messages)
-        contexts = self._extract_contexts(messages)
+        sources = self._extract_source_info(messages)
+        contexts = self._extract_contexts(messages)         # For evaluation
         
         return {
-            "type": "document_based" if source_info else "general",
-            "source": source_info.get("source") if source_info else None,
-            "page": source_info.get("page") if source_info else None,
             "answer": final_ans,
+            "sources": sources,
             "contexts": contexts
         }
-            
-    def _test_process_pdf(self):
-        self.ingest_legal_docs()
     
+    def _add_child_and_parent_documents(self, child_docs: list, parent_docs: dict, batch_size: int=200):
+        """
+            ChromaDB max batch: 5461 docs. 
+            PDF page: ~24 child chunks. 
+            Recommended batch_size: 150-200.
+        """
+        if not child_docs or not parent_docs:
+            return
+
+        ids = [d.metadata["child_id"] for d in child_docs]
+        
+        for i in range(0, len(child_docs), batch_size):
+            child_batch = child_docs[i : i + batch_size]
+            id_batch = ids[i : i + batch_size]
+            self.vector_db.add_documents(child_batch, ids=id_batch)
+            
+        self.docstore.mset(list(parent_docs.items()))
+        
+        self._build_bm25_retriever(child_docs)
+
+    def _compute_docs_hash(self, docs) -> str:
+        content = "".join(sorted(d.metadata["child_id"] for d in docs))
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def _build_bm25_retriever(self, child_docs, bm25_top_k=5):
+        os.makedirs(os.path.dirname(BM25_PATH), exist_ok=True)
+        current_hash = self._compute_docs_hash(child_docs)
+
+        if os.path.exists(BM25_PATH) and os.path.exists(BM25_HASH_PATH):
+            with open(BM25_HASH_PATH, "r") as f:
+                saved_hash = f.read().strip()
+            if saved_hash == current_hash:
+                print("-> BM25 cache valid, loading from disk")
+                with open(BM25_PATH, "rb") as f:
+                    return pickle.load(f)
+
+        print("-> Building BM25 index")
+        bm25_retriever = BM25Retriever.from_documents(child_docs)
+        bm25_retriever.k = bm25_top_k
+
+        with open(BM25_PATH, "wb") as f:
+            pickle.dump(bm25_retriever, f)
+        with open(BM25_HASH_PATH, "w") as f:
+            f.write(current_hash)
+
+        return bm25_retriever
+    
+    def _load_bm25_retriever(self):
+        """loads BM25 from disk."""
+        if os.path.exists(BM25_PATH):
+            with open(BM25_PATH, "rb") as f:
+                return pickle.load(f)
+        raise FileNotFoundError("BM25 index not found. Run ingestion first.")
+              
+    def _hybrid_retriever(self):
+        vector_retriever = self.vector_db.as_retriever()
+        bm25_retriever = self._load_bm25_retriever()
+    
+        return EnsembleRetriever(
+            retrievers=[bm25_retriever, vector_retriever],
+            weights=[0.6, 0.4]
+        )
+        
+    def _get_retrieved_docs(self, jurisdiction: str, domain: str):
+        # Verify if the jurisdiction and domain are valid
+        if jurisdiction not in set(m["jurisdiction"] for m in self.vector_db.get()["metadatas"]):
+            raise ValueError(f"Invalid jurisdiction: {jurisdiction}")
+        if domain not in set(m["domain"] for m in self.vector_db.get()["metadatas"]):
+            raise ValueError(f"Invalid domain: {domain}")
+        
+        @tool(response_format="content_and_artifact")
+        def retrieve_doc(query:str) -> tuple:
+            """
+                Query documents from the user's question.
+                Args:
+                    query: The user's question or search query.
+                    jurisdiction: The jurisdiction to filter by.
+                    domain: The domain to filter by.
+                Returns:
+                    A tuple of (serialized text, list of Document objects).
+            """
+            try:
+                retriever = self._hybrid_retriever()
+                
+                retrieved_child_chunks = retriever.invoke(query)
+                
+                # Filter based on jurisdiction and domain
+                retrieved_child_chunks = [
+                    d for d in retrieved_child_chunks
+                    if d.metadata.get("jurisdiction") == jurisdiction
+                    and d.metadata.get("domain") == domain
+                ]
+
+                # 3. Fetch parents
+                # This will be replaced by reranking 
+                parent_counts = Counter(
+                    r.metadata["parent_id"] for r in retrieved_child_chunks
+                )
+                top_parent_ids = [
+                    pid for pid, _ in parent_counts.most_common(1)  # Get the top 1 most related parent chunk
+                ]
+                
+                parents = self.docstore.mget(top_parent_ids)
+                parents = [p for p in parents if p is not None]
+                
+                serialized = "\n\n".join(
+                    f"Source: {doc.metadata}\nContent: {doc.page_content}"
+                    for doc in parents
+                )
+                return serialized, parents
+            except Exception as e:
+                return f"An error occurred while retrieving documents: {e}", [] 
+            
+        return retrieve_doc
+    
+    def _get_system_prompt(self, jurisdiction, domain):
+        return system_prompt.format(jurisdiction=jurisdiction, domain=domain)
+     
+    def _extract_source_info(self, messages):
+        for msg in messages:
+            if msg.type == "tool" and msg.name == "retrieve_doc":
+                if hasattr(msg, 'artifact') and msg.artifact:
+                    return [
+                        {
+                            "source": doc.metadata.get("source"),
+                            "parent_title": doc.metadata.get("parent_title"),
+                            "content": doc.page_content,
+                        }
+                        for doc in msg.artifact
+                    ]
+        return []  
+    
+    def _extract_contexts(self, messages) -> list[str]:
+        """
+            Extract the contexts from agent response, used for evaluation.
+        """
+        contexts = []
+        for msg in messages:
+            if hasattr(msg, "type") and msg.type == "tool" and hasattr(msg, "artifact"):
+                if msg.artifact:
+                    for doc in msg.artifact:
+                        contexts.append(doc.page_content)
+        return contexts
+
+# if __name__ == "__main__":
+    #rag = RagController()
+    # query = "Trí tuệ nhân tạo là gì?"
+    # agent = rag.build_legal_agent("Vietnam", "AI Law")
+    # result = rag.ask(agent, "Thế nào là trí tuệ nhân tạo?")
+    # retriever = rag._hybrid_retriever()
+    # documents = retriever.invoke(query)
+    # print(f"Number of documents retrieved: {len(documents)}")
+    # # for doc in documents:  
+    # #     print("--"*50)
+    # #     print(f"{doc}\n")
+    # filtered = [
+    #     d for d in documents
+    #     if d.metadata.get("jurisdiction") == "Vietnam"
+    #     and d.metadata.get("domain") == "AI Law"
+    # ]
+    
+    # parent_counts = Counter(
+    #     r.metadata["parent_id"] for r in documents
+    # )
+    # top_parent_ids = [
+    #     pid for pid, _ in parent_counts.most_common(1)
+    # ]
+
+    # # Fetch only top parents
+    # parents = [p for p in top_parent_ids if p is not None]
+    # print(f"parent_ids: {top_parent_ids}")
+    # parents = rag.docstore.mget(top_parent_ids)
+    # parents = [p for p in parents if p is not None]
+    # for parent in parents:
+    #     print("--"*50)
+    #     print(f"{parent}\n")
+    
+   
