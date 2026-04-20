@@ -1,5 +1,5 @@
 # Legal RAG Assistant
-A personal end-to-end Retrieval-Augmented Generation (RAG) system that helps look up and answer legal questions. Currently focused on Vietnamese legal documents, with plans to extend to other jurisdictions.
+I built this personal end-to-end RAG system to query and answer my legal questions. It currently supports Vietnamese legal documents, with future plans to include additional domains and jurisdictions.
 
 ---
 
