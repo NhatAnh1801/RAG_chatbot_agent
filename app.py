@@ -104,7 +104,7 @@ if question:
     with chat_container:
         with st.chat_message("assistant"):
             with st.spinner(f"Thinking..."):
-                history = st.session_state.messages[1:]
+                history = st.session_state.messages[1:-1]
                 response = None
                 sources = []
                 try:
