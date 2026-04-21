@@ -151,13 +151,27 @@ class RagController:
         if history:
             max_messages = max_turns * 2
             recent_history = history[-max_messages:]
+            history_lines = []
             for msg in recent_history:
-                messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+                history_lines.append(f"{msg['role']}: {msg['content']}")
+            history_text = "\n".join(history_lines)
         
-        messages.append({"role": "user", "content": question})
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Conversation history (for context only):\n"
+                    "[HISTORY]\n```\n"
+                    f"{history_text}\n"
+                    "```\n[HISTORY]\n\n"
+                )
+            })
+        
+        messages.append({
+            "role": "user",
+            "content": f"[CURRENT_QUESTION]\n{question}\n[CURRENT_QUESTION]"
+        })
+        
+        print(f"messages: \n{messages}\n")
         inputs = {"messages": messages}
         
         response = None
@@ -243,7 +257,7 @@ class RagController:
                 return pickle.load(f)
         raise FileNotFoundError("BM25 index not found. Run ingestion first.")
               
-    def _hybrid_retriever(self):
+    def _hybrid_retriever(self): 
         vector_retriever = self.vector_db.as_retriever()
         bm25_retriever = self._load_bm25_retriever()
     
@@ -262,13 +276,14 @@ class RagController:
         @tool(response_format="content_and_artifact")
         def retrieve_doc(query:str) -> tuple:
             """
-                Query documents from the user's question.
+                Use this tool to retrieve relevant legal documents from the {domain} domain in {jurisdiction} when responding to a user's legal question.
+           
                 Args:
                     query: The user's question or search query.
-                    jurisdiction: The jurisdiction to filter by.
-                    domain: The domain to filter by.
                 Returns:
-                    A tuple of (serialized text, list of Document objects).
+                    tuple:
+                        - serialized (str): A readable string summarizing the key content of the most relevant legal document(s).
+                        - parents (list[Document]): The top Document object(s) related to the query.
             """
             try:
                 retriever = self._hybrid_retriever()
@@ -333,37 +348,5 @@ class RagController:
                         contexts.append(doc.page_content)
         return contexts
 
-# if __name__ == "__main__":
-    #rag = RagController()
-    # query = "Trí tuệ nhân tạo là gì?"
-    # agent = rag.build_legal_agent("Vietnam", "AI Law")
-    # result = rag.ask(agent, "Thế nào là trí tuệ nhân tạo?")
-    # retriever = rag._hybrid_retriever()
-    # documents = retriever.invoke(query)
-    # print(f"Number of documents retrieved: {len(documents)}")
-    # # for doc in documents:  
-    # #     print("--"*50)
-    # #     print(f"{doc}\n")
-    # filtered = [
-    #     d for d in documents
-    #     if d.metadata.get("jurisdiction") == "Vietnam"
-    #     and d.metadata.get("domain") == "AI Law"
-    # ]
-    
-    # parent_counts = Counter(
-    #     r.metadata["parent_id"] for r in documents
-    # )
-    # top_parent_ids = [
-    #     pid for pid, _ in parent_counts.most_common(1)
-    # ]
-
-    # # Fetch only top parents
-    # parents = [p for p in top_parent_ids if p is not None]
-    # print(f"parent_ids: {top_parent_ids}")
-    # parents = rag.docstore.mget(top_parent_ids)
-    # parents = [p for p in parents if p is not None]
-    # for parent in parents:
-    #     print("--"*50)
-    #     print(f"{parent}\n")
     
    
